@@ -687,6 +687,41 @@ configure_target() {
     arch-chroot "$TARGET" systemctl enable NetworkManager
 }
 
+# 6.8 桌面环境前置准备：在目标系统中完成需要 root 执行的用户初始化。
+# 6.8.1 全局文本编辑器：设置 EDITOR=vim，优先修改已有配置或注释示例。
+configure_editor() {
+    step 6.8.1 '设置目标系统全局编辑器：vim'
+    if grep -qE '^[[:space:]]*#?[[:space:]]*EDITOR[[:space:]]*=' "$TARGET/etc/environment"; then
+        sed -i -E 's/^[[:space:]]*#?[[:space:]]*EDITOR[[:space:]]*=.*/EDITOR=vim/' "$TARGET/etc/environment"
+    else
+        printf '\nEDITOR=vim\n' >> "$TARGET/etc/environment"
+    fi
+}
+
+# 6.8.2 创建普通用户：账户、home 目录和密码均位于目标系统。
+create_user() {
+    local username
+    step 6.8.2 '创建普通用户'
+    # 6.8.2.1 新建用户，同时创建 home 目录并加入 wheel 组。
+    step 6.8.2.1 '新建普通用户并加入 wheel 组'
+    ask '用户名：' username
+    arch-chroot "$TARGET" useradd -mG wheel -- "$username"
+    # 6.8.2.2 设置用户密码，由 passwd 隐藏读取并确认。
+    step 6.8.2.2 '设置普通用户密码'
+    arch-chroot "$TARGET" passwd -- "$username" </dev/tty
+}
+
+# 6.8.3 配置 sudo 权限：启用 wheel 组权限，保留密码验证。
+configure_sudo() {
+    step 6.8.3 '启用目标系统 wheel 组 sudo 权限'
+    if grep -qE '^[[:space:]]*#?[[:space:]]*%wheel[[:space:]]+ALL=\(ALL:ALL\)[[:space:]]+ALL[[:space:]]*$' "$TARGET/etc/sudoers"; then
+        sed -i -E 's/^[[:space:]]*#?[[:space:]]*%wheel[[:space:]]+ALL=\(ALL:ALL\)[[:space:]]+ALL[[:space:]]*$/%wheel ALL=(ALL:ALL) ALL/' "$TARGET/etc/sudoers"
+    else
+        printf '\n%%wheel ALL=(ALL:ALL) ALL\n' >> "$TARGET/etc/sudoers"
+    fi
+    arch-chroot "$TARGET" visudo -c
+}
+
 # 安装结果检查：校验启动文件、时区、locale、网络服务和 fstab。
 verify_target() {
     STAGE='安装结果检查'
@@ -737,15 +772,19 @@ main() {
     install_base
     step 6 '基础设置'
     configure_target
+    step 6.8 '桌面环境前置准备：编辑器和普通用户'
+    configure_editor
+    create_user
+    configure_sudo
     verify_target
-    # 6.8 退出 chroot：目标系统命令执行完毕，后续操作均在 Live 环境中执行。
-    step 6.8 '退出 chroot：目标系统配置完成，返回 Live 环境'
-    say '安装完成。目标系统使用 NetworkManager + iwd，未保存 Live Wi-Fi 凭据。首次启动后可运行 nmtui 联网。'
-    # 6.9 重启电脑：用户确认后，先清理挂载再重启。
-    step 6.9 '重启电脑'
+    # 6.9 退出 chroot：目标系统命令执行完毕，后续操作均在 Live 环境中执行。
+    step 6.9 '退出 chroot：目标系统配置完成，返回 Live 环境'
+    say '安装完成。首次启动后以新建的普通用户登录，运行 nmtui 联网，再执行 bash setup-desktop.sh 安装桌面。'
+    # 6.10 重启电脑：用户确认后，先清理挂载再重启。
+    step 6.10 '重启电脑'
     if confirm '现在卸载安装挂载并重启？'; then
-        # 6.9.1 停用 Swap 并卸载分区；任一操作失败时停止重启流程。
-        step 6.9.1 '停用 Swap 并卸载安装分区'
+        # 6.10.1 停用 Swap 并卸载分区；任一操作失败时停止重启流程。
+        step 6.10.1 '停用 Swap 并卸载安装分区'
         local i
         if (( SWAP_ACTIVE )); then
             swapoff "$TARGET/swap/swapfile"
@@ -755,8 +794,8 @@ main() {
             umount "${MOUNTS[i]}"
             unset 'MOUNTS[i]'
         done
-        # 6.9.2 重启系统。
-        step 6.9.2 '重启系统'
+        # 6.10.2 重启系统。
+        step 6.10.2 '重启系统'
         reboot
     else
         say '已选择暂不重启。即将卸载本次安装挂载并返回 Live 环境，可稍后手动 reboot。'

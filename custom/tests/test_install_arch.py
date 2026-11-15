@@ -269,6 +269,48 @@ cleanup
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('未能卸载', result.stderr)
 
+    def test_user_is_created_in_target_system_with_terminal_for_password(self):
+        # 伪终端保留 passwd 的交互条件，命令替身避免创建真实账户。
+        import errno
+        import pty
+        import tempfile
+        code = '''
+source "$1"
+TARGET="$2"
+CALLS="$3"
+ask() { printf -v "$2" '%s' desktopuser; }
+arch-chroot() {
+    printf '%s\\0' "$@" >> "$CALLS"
+    printf '\\n' >> "$CALLS"
+    if [[ $2 == passwd ]]; then [[ -t 0 ]]; fi
+}
+create_user
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            calls = Path(directory, 'calls')
+            child, terminal = pty.fork()
+            if child == 0:
+                os.execvp('bash', ['bash', '-c', code, 'user-check', str(SCRIPT), directory, str(calls)])
+            output = b''
+            try:
+                while True:
+                    try:
+                        chunk = os.read(terminal, 8192)
+                    except OSError as exc:
+                        if exc.errno == errno.EIO:
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    output += chunk
+            finally:
+                os.close(terminal)
+                _, status = os.waitpid(child, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0, output.decode())
+            rows = [row.rstrip(b'\0').decode().split('\0') for row in calls.read_bytes().splitlines()]
+            self.assertEqual(rows, [[directory, 'useradd', '-mG', 'wheel', '--', 'desktopuser'],
+                                    [directory, 'passwd', '--', 'desktopuser']])
+
     def test_swap_zero_skips_creation_and_activation(self):
         # 只调用安装包阶段，外部命令全部为 Shell 函数，不运行真实安装工具。
         code = '''
