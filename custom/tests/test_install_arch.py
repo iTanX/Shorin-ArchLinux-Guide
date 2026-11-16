@@ -244,6 +244,8 @@ class ConfigTests(unittest.TestCase):
         code = '''
 source "$1"
 TARGET="$2"
+# 记录目标服务设置，避免执行真实 chroot 或操作宿主服务。
+arch-chroot() { printf '%s\\0' "$@" >> "$TARGET/chroot.calls"; printf '\\n' >> "$TARGET/chroot.calls"; }
 # 为 macOS 的 BSD sed 补充空备份后缀；只编辑临时目标目录。
 sed() {
     if [[ $(uname -s) == Darwin && $1 == -i ]]; then
@@ -271,6 +273,29 @@ for function in "${@:3}"; do "$function"; done
         self.assertEqual((self.root / 'etc/locale.conf').read_text(), 'LANG=en_US.UTF-8\n')
         self.assertEqual((self.root / 'etc/default/grub').read_text(), 'GRUB_DEFAULT=0\n\nGRUB_DISABLE_OS_PROBER=false\n')
         self.assertEqual(self.network.read_text(), '[device]\nwifi.backend=iwd\n')
+
+    def test_ssh_configures_password_login_and_enables_only_target_service(self):
+        config = self.root / 'etc/ssh/sshd_config'
+        config.parent.mkdir()
+        samples = (
+            '#PermitRootLogin prohibit-password\n#PasswordAuthentication yes\n',
+            'PermitRootLogin no\nPasswordAuthentication no\n',
+            '# 其他配置\n',
+        )
+        for before in samples:
+            with self.subTest(before=before):
+                config.write_text(before)
+                calls = self.root / 'chroot.calls'
+                calls.unlink(missing_ok=True)
+                # 重复执行不应新增重复配置，且不能启动 Live 中的 sshd。
+                self.run_config('configure_ssh', 'configure_ssh')
+                content = config.read_text()
+                self.assertEqual(content.count('PermitRootLogin yes\n'), 1)
+                self.assertEqual(content.count('PasswordAuthentication yes\n'), 1)
+                if before.startswith('# 其他配置'):
+                    self.assertTrue(content.startswith('# 其他配置\n'))
+                rows = [row[:-1].decode().split('\0') for row in calls.read_bytes().splitlines()]
+                self.assertEqual(rows, [[str(self.root), 'systemctl', 'enable', 'sshd']] * 2)
 
     def test_iwd_uses_existing_commented_section_and_only_changes_dedicated_file(self):
         self.network.write_text('# comment\n#[device]\n#wifi.backend=wpa_supplicant\n[logging]\nlevel=INFO\n')
@@ -359,7 +384,8 @@ TARGET="$2"
 SWAP_GIB=0
 say() { :; }
 python3() { printf '%s\\n' GenuineIntel; }
-pacstrap() { :; }
+# 基础软件包必须包含目标系统的 OpenSSH。
+pacstrap() { [[ " $* " == *' openssh '* ]]; }
 btrfs() { printf 'unexpected btrfs\\n'; return 99; }
 swapon() { printf 'unexpected swapon\\n'; return 99; }
 genfstab() { printf 'fake fstab\\n'; }

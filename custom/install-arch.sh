@@ -516,7 +516,7 @@ install_base() {
     # 5.1 基础安装：识别 CPU 微码，安装系统、网络和引导软件包。
     step 5.1 '基础安装：识别 CPU 并安装软件包'
     local vendor
-    local -a packages=(base linux linux-firmware btrfs-progs vim sudo networkmanager iwd grub efibootmgr os-prober fuse3)
+    local -a packages=(base linux linux-firmware btrfs-progs vim sudo networkmanager iwd openssh grub efibootmgr os-prober fuse3)
     vendor=$(python3 -c 'import re; from pathlib import Path; m=re.search(r"^vendor_id\s*:\s*(\S+)", Path("/proc/cpuinfo").read_text(), re.M); print(m[1] if m else "")')
     case "$vendor" in
         GenuineIntel) packages+=(intel-ucode) ;;
@@ -669,6 +669,22 @@ configure_sudo() {
     arch-chroot "$TARGET" visudo -c
 }
 
+# 6.8.4 开启 SSH：OpenSSH 已在 5.1 安装，按初始化文档允许 root 密码登录。
+configure_ssh() {
+    step 6.8.4 '配置 SSH 密码登录并启用开机自启'
+    local config="$TARGET/etc/ssh/sshd_config" key
+    # 优先修改已有配置或解除注释，缺少对应项时才追加。
+    for key in PermitRootLogin PasswordAuthentication; do
+        if grep -qE "^[[:space:]]*#?[[:space:]]*${key}[[:space:]]+" "$config"; then
+            sed -i -E "s/^[[:space:]]*#?[[:space:]]*${key}[[:space:]]+.*/${key} yes/" "$config"
+        else
+            printf '\n%s yes\n' "$key" >> "$config"
+        fi
+    done
+    # chroot 中只设置开机自启，服务在目标系统启动后运行。
+    arch-chroot "$TARGET" systemctl enable sshd
+}
+
 # 安装结果检查：校验启动文件、时区、locale、网络服务和 fstab。
 verify_target() {
     STAGE='安装结果检查'
@@ -719,10 +735,11 @@ main() {
     install_base
     step 6 '基础设置'
     configure_target
-    step 6.8 '桌面环境前置准备：编辑器和普通用户'
+    step 6.8 '桌面环境前置准备：编辑器、普通用户和 SSH'
     configure_editor
     create_user
     configure_sudo
+    configure_ssh
     verify_target
     # 6.9 退出 chroot：目标系统命令执行完毕，后续操作均在 Live 环境中执行。
     step 6.9 '退出 chroot：目标系统配置完成，返回 Live 环境'
