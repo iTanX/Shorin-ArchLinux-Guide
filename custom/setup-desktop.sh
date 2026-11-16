@@ -18,8 +18,8 @@ trap report_error ERR
 
 # 1.1 连接网络：优先使用有线网络，否则交互连接 Wi-Fi。
 online() {
-    curl --fail --silent --show-error --location --connect-timeout 10 --max-time 20 \
-        --output /dev/null https://archlinux.org/ >/dev/null 2>&1
+    curl --fail --silent --show-error --location --connect-timeout 5 --max-time 10 \
+        --output /dev/null https://www.baidu.com/ >/dev/null 2>&1
 }
 
 connect_network() {
@@ -50,15 +50,19 @@ connect_network() {
         return 1
     fi
     while true; do
-        sudo nmcli device wifi rescan ifname "$iface"
-        nmcli device wifi list ifname "$iface"
-        read -r -p 'Wi-Fi 名称（SSID）：' ssid
-        [[ -n $ssid ]] || continue
-        printf '接下来由 nmcli 提示输入 Wi-Fi 密码，连接由 NetworkManager 保存。\n'
-        if sudo nmcli --ask device wifi connect "$ssid" ifname "$iface" && online; then
-            break
+        # 扫描被暂时拒绝时仍可读取缓存；列表或连接失败后统一询问重试。
+        if ! sudo nmcli device wifi rescan ifname "$iface"; then
+            printf 'Wi-Fi 扫描请求未成功，尝试使用已有扫描结果。\n'
         fi
-        read -r -p '连接失败或无法访问网络，是否重试？[y/N]：' answer
+        if nmcli device wifi list ifname "$iface"; then
+            read -r -p 'Wi-Fi 名称（SSID）：' ssid
+            [[ -n $ssid ]] || continue
+            printf '接下来由 nmcli 提示输入 Wi-Fi 密码，连接由 NetworkManager 保存。\n'
+            if sudo nmcli --ask device wifi connect "$ssid" ifname "$iface" && online; then
+                break
+            fi
+        fi
+        read -r -p '扫描结果不可用、连接失败或无法访问网络，是否重试？[y/N]：' answer
         [[ $answer == y || $answer == Y ]] || return 1
     done
     # 1.1.3 确认联网成功后，继续执行软件包安装。
@@ -259,9 +263,9 @@ install_nautilus_enhancements() {
 }
 
 enable_gnome() {
-    # 2.1.6 开启桌面：启用并立即启动 GDM。
-    step 2.1.6 '开启 GNOME 桌面'
-    sudo systemctl enable --now gdm
+    # 2.1.6 启用 GDM 开机自启，剩余终端交互完成后再进入图形界面。
+    step 2.1.6 '启用 GNOME 桌面开机自启'
+    sudo systemctl enable gdm
 }
 
 # 2.2 其他设置
@@ -293,7 +297,7 @@ configure_gnome_terminal() {
     XDG_CURRENT_DESKTOP=GNOME xdg-terminal-exec --print-id
 }
 
-# 安装完成后统一询问重启，避免在前置准备阶段中断后续安装。
+# 所有安装与配置交互完成后询问重启；不重启时最后启动 GDM。
 finish_installation() {
     local answer
     step 2.3 '完成安装'
@@ -301,7 +305,8 @@ finish_installation() {
     if [[ $answer == y || $answer == Y ]]; then
         sudo reboot
     else
-        printf '安装完成，可稍后手动重启。\n'
+        printf '安装完成，正在启动 GNOME 图形登录界面；可稍后手动重启。\n'
+        sudo systemctl start gdm
     fi
 }
 

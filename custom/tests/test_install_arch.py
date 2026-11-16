@@ -278,10 +278,16 @@ cleanup
 source "$1"
 TARGET="$2"
 CALLS="$3"
-ask() { printf -v "$2" '%s' desktopuser; }
+names=('' root 'bad name' desktopuser)
+answer_index=0
+ask() {
+    printf -v "$2" '%s' "${names[answer_index]}"
+    answer_index=$((answer_index + 1))
+}
 arch-chroot() {
     printf '%s\\0' "$@" >> "$CALLS"
     printf '\\n' >> "$CALLS"
+    if [[ $2 == useradd && "${@: -1}" != desktopuser ]]; then return 3; fi
     if [[ $2 == passwd ]]; then [[ -t 0 ]]; fi
 }
 create_user
@@ -307,9 +313,11 @@ create_user
                 os.close(terminal)
                 _, status = os.waitpid(child, 0)
             self.assertEqual(os.waitstatus_to_exitcode(status), 0, output.decode())
-            rows = [row.rstrip(b'\0').decode().split('\0') for row in calls.read_bytes().splitlines()]
-            self.assertEqual(rows, [[directory, 'useradd', '-mG', 'wheel', '--', 'desktopuser'],
-                                    [directory, 'passwd', '--', 'desktopuser']])
+            rows = [row[:-1].decode().split('\0') for row in calls.read_bytes().splitlines()]
+            expected = [[directory, 'useradd', '-mG', 'wheel', '--', name]
+                        for name in ('', 'root', 'bad name', 'desktopuser')]
+            expected.append([directory, 'passwd', '--', 'desktopuser'])
+            self.assertEqual(rows, expected)
 
     def test_swap_zero_skips_creation_and_activation(self):
         # 只调用安装包阶段，外部命令全部为 Shell 函数，不运行真实安装工具。

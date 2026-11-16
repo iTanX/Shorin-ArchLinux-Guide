@@ -704,8 +704,14 @@ create_user() {
     step 6.8.2 '创建普通用户'
     # 6.8.2.1 新建用户，同时创建 home 目录并加入 wheel 组。
     step 6.8.2.1 '新建普通用户并加入 wheel 组'
-    ask '用户名：' username
-    arch-chroot "$TARGET" useradd -mG wheel -- "$username"
+    # 创建失败时保留当前安装流程，允许更正用户名后重试。
+    while true; do
+        ask '用户名：' username
+        if arch-chroot "$TARGET" useradd -mG wheel -- "$username"; then
+            break
+        fi
+        say '用户创建失败，请根据以上错误重新输入用户名；按 Ctrl+C 可取消。'
+    done
     # 6.8.2.2 设置用户密码，由 passwd 隐藏读取并确认。
     step 6.8.2.2 '设置普通用户密码'
     arch-chroot "$TARGET" passwd -- "$username" </dev/tty
