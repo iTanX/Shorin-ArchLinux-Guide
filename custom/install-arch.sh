@@ -77,7 +77,7 @@ check_environment() {
 
 online() {
     curl --fail --silent --show-error --location --connect-timeout 10 --max-time 20 \
-        --output /dev/null https://archlinux.org/ >/dev/null 2>&1
+        --output /dev/null https://www.baidu.com/ >/dev/null 2>&1
 }
 
 # 3.3 连接网络
@@ -542,102 +542,43 @@ install_base() {
     genfstab -U "$TARGET" > "$TARGET/etc/fstab"
 }
 
-# 配置文件更新：按功能写入对应配置，优先更新有效项或解除已有示例的注释。
-configure_files() {
-    python3 - "$TARGET" "$HOSTNAME_VALUE" "$1" <<'PY_CONFIG'
-from pathlib import Path
-import re
-import sys
+# 6.3.1 本地化配置：解除中英文 locale 的注释，并设置英文系统语言。
+configure_locale() {
+    sed -i -E 's/^[[:space:]]*#[[:space:]]*(en_US[.]UTF-8[[:space:]]+UTF-8|zh_CN[.]UTF-8[[:space:]]+UTF-8)[[:space:]]*$/\1/' "$TARGET/etc/locale.gen"
+    local config="$TARGET/etc/locale.conf"
+    if [[ -f $config ]] && grep -qE '^[[:space:]]*#?[[:space:]]*LANG[[:space:]]*=' "$config"; then
+        sed -i -E 's/^[[:space:]]*#?[[:space:]]*LANG[[:space:]]*=.*/LANG=en_US.UTF-8/' "$config"
+    else
+        printf 'LANG=en_US.UTF-8\n' >> "$config"
+    fi
+}
 
+# 6.6.2 编辑 GRUB 配置：启用已有示例，缺少对应项时才新增。
+configure_grub() {
+    local config="$TARGET/etc/default/grub"
+    if grep -qE '^[[:space:]]*#?[[:space:]]*GRUB_DISABLE_OS_PROBER[[:space:]]*=' "$config"; then
+        sed -i -E 's/^[[:space:]]*#?[[:space:]]*GRUB_DISABLE_OS_PROBER[[:space:]]*=.*/GRUB_DISABLE_OS_PROBER=false/' "$config"
+    else
+        printf '\nGRUB_DISABLE_OS_PROBER=false\n' >> "$config"
+    fi
+}
 
-def set_key(text, key, value):
-    """优先修改有效项，否则解除现有示例注释；缺失时才追加。"""
-    lines = text.splitlines()
-    pattern = re.compile(r'^\s*(?P<comment>#+\s*)?' + re.escape(key) + r'\s*=')
-    matches = [(i, pattern.match(line)) for i, line in enumerate(lines) if pattern.match(line)]
-    active = [i for i, m in matches if not m['comment']]
-    chosen = active[0] if active else matches[0][0] if matches else None
-    if chosen is None:
-        lines.append(f'{key}={value}')
-    else:
-        lines[chosen] = f'{key}={value}'
-        for i in active:
-            if i != chosen:
-                lines[i] = '# ' + lines[i]
-    return '\n'.join(lines) + '\n'
-
-
-def enable_locales(text):
-    lines = text.splitlines()
-    for locale in ('en_US.UTF-8 UTF-8', 'zh_CN.UTF-8 UTF-8'):
-        pattern = re.compile(r'^\s*#*\s*' + re.escape(locale) + r'\s*$')
-        matches = [i for i, line in enumerate(lines) if pattern.match(line)]
-        if matches:
-            lines[matches[0]] = locale
-            for i in matches[1:]:
-                lines[i] = '# ' + locale
-        else:
-            lines.append(locale)
-    return '\n'.join(lines) + '\n'
-
-
-def set_iwd(text):
-    lines = text.splitlines()
-    # 优先使用有效节，只有没有有效节时才解除示例节的注释。
-    header = re.compile(r'^\s*(?P<comment>#\s*)?\[device\]\s*$')
-    matches = [(i, header.match(line)) for i, line in enumerate(lines) if header.match(line)]
-    active = [i for i, match in matches if not match['comment']]
-    chosen = active[0] if active else matches[0][0] if matches else None
-    if chosen is None:
-        return text.rstrip() + '\n\n[device]\nwifi.backend=iwd\n'
-    # 若文件已有多个有效 device 节，注释其他节的冲突键，保留无关设置。
-    for start in reversed(active):
-        if start == chosen:
-            continue
-        end = start + 1
-        while end < len(lines) and not re.match(r'^\s*#?\s*\[.+\]', lines[end]):
-            end += 1
-        for i in range(start + 1, end):
-            if re.match(r'^\s*wifi\.backend\s*=', lines[i]):
-                lines[i] = '# ' + lines[i]
-    end = chosen + 1
-    while end < len(lines) and not re.match(r'^\s*#?\s*\[.+\]', lines[end]):
-        end += 1
-    lines[chosen] = '[device]'
-    body = set_key('\n'.join(lines[chosen + 1:end]), 'wifi.backend', 'iwd').splitlines()
-    return '\n'.join(lines[:chosen + 1] + body + lines[end:]) + '\n'
-
-
-def update(path, transform):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(transform(path.read_text() if path.exists() else ''))
-
-
-def main():
-    root = Path(sys.argv[1])
-    section = sys.argv[3]
-    if section == 'locale':
-        # 6.3.1 编辑本地化配置：启用中英文 locale，设置英文系统语言。
-        update(root / 'etc/locale.gen', enable_locales)
-        update(root / 'etc/locale.conf', lambda s: set_key(s, 'LANG', 'en_US.UTF-8'))
-    elif section == 'hostname':
-        # 6.4 设置主机名：写入经过校验的输入值。
-        (root / 'etc/hostname').write_text(sys.argv[2] + '\n')
-    elif section == 'grub':
-        # 6.6.2 编辑 GRUB 配置：启用其他系统检测。
-        update(root / 'etc/default/grub', lambda s: set_key(s, 'GRUB_DISABLE_OS_PROBER', 'false'))
-    elif section == 'network':
-        # 6.7.1 配置 iwd 后端：更新已有示例，缺少配置时再新建文件。
-        nm = root / 'etc/NetworkManager'
-        candidates = [nm / 'NetworkManager.conf'] + sorted((nm / 'conf.d').glob('*.conf'))
-        matching = [p for p in candidates if p.exists() and re.search(r'^\s*#?\s*wifi\.backend\s*=', p.read_text(), re.M)]
-        for path in matching or [nm / 'conf.d/iwd.conf']:
-            update(path, set_iwd)
-
-
-if __name__ == '__main__':
-    main()
-PY_CONFIG
+# 6.7.1 配置 iwd 后端：只修改专用的 iwd.conf。
+configure_network_backend() {
+    local config="$TARGET/etc/NetworkManager/conf.d/iwd.conf"
+    mkdir -p "${config%/*}"
+    if [[ -f $config ]]; then
+        sed -i -E 's/^[[:space:]]*#?[[:space:]]*\[device\][[:space:]]*$/[device]/; s/^[[:space:]]*#?[[:space:]]*wifi[.]backend[[:space:]]*=.*/wifi.backend=iwd/' "$config"
+        if ! grep -qx '\[device\]' "$config"; then
+            printf '\n[device]\nwifi.backend=iwd\n' >> "$config"
+        elif ! grep -q '^wifi[.]backend=' "$config"; then
+            sed -i '/^\[device\]$/a\
+wifi.backend=iwd
+' "$config"
+        fi
+    else
+        printf '[device]\nwifi.backend=iwd\n' > "$config"
+    fi
 }
 
 # 6 基础设置
@@ -656,13 +597,13 @@ configure_target() {
     # 6.3 本地化设置。
     step 6.3 '本地化设置'
     step 6.3.1 '编辑 locale.gen 和 locale.conf：启用中英文 locale，系统语言设为英文'
-    configure_files locale
+    configure_locale
     # 6.3.2 生成本地化配置。
     step 6.3.2 '生成本地化配置'
     arch-chroot "$TARGET" locale-gen
     # 6.4 设置主机名。
     step 6.4 "设置主机名：${HOSTNAME_VALUE}"
-    configure_files hostname
+    printf '%s\n' "$HOSTNAME_VALUE" > "$TARGET/etc/hostname"
     # 6.5 设置 root 密码：passwd 隐藏读取并确认密码。
     step 6.5 '设置 root 密码'
     say '请按 passwd 提示输入两次 root 密码，输入时不显示。'
@@ -674,14 +615,14 @@ configure_target() {
     arch-chroot "$TARGET" grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=ARCH
     # 6.6.2 编辑 GRUB 配置。
     step 6.6.2 '编辑 GRUB 配置：启用其他系统检测'
-    configure_files grub
+    configure_grub
     # 6.6.3 生成启动流程 grub.cfg。
     step 6.6.3 '生成 GRUB 启动配置'
     arch-chroot "$TARGET" grub-mkconfig -o /boot/grub/grub.cfg
     # 6.7 设置无线网络：软件包已在 5.1 基础安装中安装。
     step 6.7 '设置无线网络：NetworkManager + iwd'
     step 6.7.1 '配置 NetworkManager 的 iwd 后端'
-    configure_files network
+    configure_network_backend
     # 6.7.2 启用 NetworkManager 服务。
     step 6.7.2 '启用 NetworkManager 开机自启'
     arch-chroot "$TARGET" systemctl enable NetworkManager

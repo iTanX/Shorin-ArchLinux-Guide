@@ -69,9 +69,10 @@ connect_network() {
     step 1.1.3 '确认网络连接：Wi-Fi 可用'
 }
 
-# 1.2 字体：安装外文字体、中日韩字体、Emoji 和终端等宽字体。
+# 1.2 字体：首次安装软件包前同步升级系统，再安装字体。
 install_fonts() {
-    step 1.2 '安装字体'
+    step 1.2 '同步升级系统并安装字体'
+    sudo pacman -Syu
     sudo pacman -S noto-fonts noto-fonts-cjk noto-fonts-emoji ttf-jetbrains-mono-nerd
 }
 
@@ -93,27 +94,14 @@ enable_multilib() {
 # 1.4 archlinuxcn 源：设置中科大与清华镜像，安装密钥并升级系统。
 configure_archlinuxcn() {
     step 1.4 '配置 archlinuxcn 源'
-    local config
-    config=$(mktemp)
-    # 更新已有节（包括注释示例），缺少该节时才在末尾新增。
-    awk '
-        function repo() {
-            print "[archlinuxcn]"
-            print "Server = https://mirrors.ustc.edu.cn/archlinuxcn/$arch"
-            print "Server = https://mirrors.tuna.tsinghua.edu.cn/archlinuxcn/$arch"
-        }
-        /^[[:space:]]*#?[[:space:]]*\[archlinuxcn\][[:space:]]*$/ {
-            if (!found++) repo()
-            in_repo = 1
-            next
-        }
-        in_repo && /^[[:space:]]*#?[[:space:]]*\[/ { in_repo = 0 }
-        in_repo && /^[[:space:]]*#?[[:space:]]*Server[[:space:]]*=/ { next }
-        { print }
-        END { if (!found) { print ""; repo() } }
-    ' /etc/pacman.conf > "$config"
-    sudo install -m 644 "$config" /etc/pacman.conf
-    rm -- "$config"
+    if grep -qE '^[[:space:]]*#?[[:space:]]*\[archlinuxcn\][[:space:]]*$' /etc/pacman.conf; then
+        # 已有配置只解除本节的注释，保留原有镜像项。
+        sudo sed -i -E '/^[[:space:]]*#?[[:space:]]*\[archlinuxcn\][[:space:]]*$/,/^[[:space:]]*#?[[:space:]]*\[/ {
+            s/^[[:space:]]*#[[:space:]]*(\[archlinuxcn\]|Server[[:space:]]*=)/\1/
+        }' /etc/pacman.conf
+    else
+        printf "\n[archlinuxcn]\nServer = https://mirrors.ustc.edu.cn/archlinuxcn/\$arch\nServer = https://mirrors.tuna.tsinghua.edu.cn/archlinuxcn/\$arch\n" | sudo tee -a /etc/pacman.conf >/dev/null
+    fi
     sudo pacman -Sy archlinuxcn-keyring
     sudo pacman -Syu
 }
@@ -124,12 +112,11 @@ install_aur_helpers() {
     sudo pacman -S --needed base-devel yay paru
 }
 
-# 1.6 Flatpak：安装软件，添加 Flathub 并设置中科大镜像。
+# 1.6 Flatpak：安装软件，将 Flathub 切换为上交大镜像。
 install_flatpak() {
-    step 1.6 '安装 Flatpak 并配置中科大镜像'
+    step 1.6 '安装 Flatpak 并配置上交大镜像'
     sudo pacman -S flatpak
-    sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-    sudo flatpak remote-modify flathub --url=https://mirrors.ustc.edu.cn/flathub
+    sudo flatpak remote-modify flathub --url=https://mirror.sjtu.edu.cn/flathub
 }
 
 # 1.7 显卡：安装 AMD 图形与 Vulkan 软件包。
@@ -244,11 +231,12 @@ install_gnome_extras() {
 hide_dependency_apps() {
     # 2.1.4 隐藏依赖带入的图形化应用，仅修改当前普通用户的桌面条目。
     step 2.1.4 '隐藏依赖带入的图形化应用'
-    local app src dst
-    mkdir -p "$HOME/.local/share/applications"
+    local app src dst applications
+    applications="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    mkdir -p "$applications"
     for app in lstopo qv4l2 qvidcap vim; do
         src="/usr/share/applications/$app.desktop"
-        dst="$HOME/.local/share/applications/$app.desktop"
+        dst="$applications/$app.desktop"
         if [[ -f $src ]]; then
             cp "$src" "$dst"
             sed -i '/^NoDisplay=/d; /^\[Desktop Entry\]$/a NoDisplay=true' "$dst"

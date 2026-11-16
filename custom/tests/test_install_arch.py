@@ -21,7 +21,6 @@ def load_block(marker):
 
 
 storage = load_block('PY_STORAGE')
-config = load_block('PY_CONFIG')
 
 
 def disk(path='/dev/nvme0n1', sector=512):
@@ -230,28 +229,61 @@ class StorageTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_commented_examples_are_enabled_without_duplicate_keys(self):
-        result = config.set_key('# keep\n#GRUB_DISABLE_OS_PROBER=false\n', 'GRUB_DISABLE_OS_PROBER', 'false')
-        self.assertEqual(result, '# keep\nGRUB_DISABLE_OS_PROBER=false\n')
-        result = config.enable_locales('#en_US.UTF-8 UTF-8\n#zh_CN.UTF-8 UTF-8\n#ja_JP.UTF-8 UTF-8\n')
-        self.assertEqual(result, 'en_US.UTF-8 UTF-8\nzh_CN.UTF-8 UTF-8\n#ja_JP.UTF-8 UTF-8\n')
+    def setUp(self):
+        import tempfile
+        self.directory = tempfile.TemporaryDirectory(prefix='arch-config-regression-')
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / 'etc/default').mkdir(parents=True)
+        self.network = self.root / 'etc/NetworkManager/conf.d/iwd.conf'
+        self.network.parent.mkdir(parents=True)
+        (self.root / 'etc/locale.gen').write_text('#en_US.UTF-8 UTF-8\n#zh_CN.UTF-8 UTF-8\n#ja_JP.UTF-8 UTF-8\n')
+        (self.root / 'etc/default/grub').write_text('#GRUB_DISABLE_OS_PROBER=false\n')
 
-    def test_existing_active_key_takes_priority_over_comment(self):
-        result = config.set_key('#LANG=old\nLANG=old\nLANG=duplicate\n', 'LANG', 'en_US.UTF-8')
-        self.assertEqual(result, '#LANG=old\nLANG=en_US.UTF-8\n# LANG=duplicate\n')
-        self.assertEqual(config.set_key(result, 'LANG', 'en_US.UTF-8'), result)
+    def run_config(self, *functions):
+        code = '''
+source "$1"
+TARGET="$2"
+# 为 macOS 的 BSD sed 补充空备份后缀；只编辑临时目标目录。
+sed() {
+    if [[ $(uname -s) == Darwin && $1 == -i ]]; then
+        shift
+        command sed -i '' "$@"
+    else
+        command sed "$@"
+    fi
+}
+for function in "${@:3}"; do "$function"; done
+'''
+        subprocess.run(['bash', '-c', code, 'config-check', str(SCRIPT), str(self.root), *functions],
+                       check=True, capture_output=True, text=True)
 
-    def test_iwd_uses_existing_commented_section(self):
-        before = '# comment\n#[device]\n#wifi.backend=wpa_supplicant\n[logging]\nlevel=INFO\n'
-        after = config.set_iwd(before)
-        self.assertEqual(after, '# comment\n[device]\nwifi.backend=iwd\n[logging]\nlevel=INFO\n')
-        self.assertEqual(config.set_iwd(after), after)
+    def test_commented_examples_are_enabled_without_new_entries(self):
+        (self.root / 'etc/locale.conf').write_text('#LANG=old\n')
+        self.run_config('configure_locale', 'configure_grub')
+        self.assertEqual((self.root / 'etc/locale.gen').read_text(), 'en_US.UTF-8 UTF-8\nzh_CN.UTF-8 UTF-8\n#ja_JP.UTF-8 UTF-8\n')
+        self.assertEqual((self.root / 'etc/locale.conf').read_text(), 'LANG=en_US.UTF-8\n')
+        self.assertEqual((self.root / 'etc/default/grub').read_text(), 'GRUB_DISABLE_OS_PROBER=false\n')
 
-    def test_active_device_section_takes_priority_over_commented_sample(self):
-        before = '#[device]\n#wifi.backend=wpa_supplicant\n[device]\nwifi.backend=wpa_supplicant\n'
-        after = config.set_iwd(before)
-        self.assertEqual(after.count('\n[device]\n'), 1)
-        self.assertIn('\n[device]\nwifi.backend=iwd\n', after)
+    def test_missing_keys_are_added_without_changing_other_settings(self):
+        (self.root / 'etc/default/grub').write_text('GRUB_DEFAULT=0\n')
+        self.run_config('configure_locale', 'configure_grub', 'configure_network_backend')
+        self.assertEqual((self.root / 'etc/locale.conf').read_text(), 'LANG=en_US.UTF-8\n')
+        self.assertEqual((self.root / 'etc/default/grub').read_text(), 'GRUB_DEFAULT=0\n\nGRUB_DISABLE_OS_PROBER=false\n')
+        self.assertEqual(self.network.read_text(), '[device]\nwifi.backend=iwd\n')
+
+    def test_iwd_uses_existing_commented_section_and_only_changes_dedicated_file(self):
+        self.network.write_text('# comment\n#[device]\n#wifi.backend=wpa_supplicant\n[logging]\nlevel=INFO\n')
+        other = self.root / 'etc/NetworkManager/NetworkManager.conf'
+        other.write_text('#wifi.backend=wpa_supplicant\n')
+        self.run_config('configure_network_backend')
+        self.assertEqual(self.network.read_text(), '# comment\n[device]\nwifi.backend=iwd\n[logging]\nlevel=INFO\n')
+        self.assertEqual(other.read_text(), '#wifi.backend=wpa_supplicant\n')
+
+    def test_missing_iwd_backend_is_inserted_inside_device_section(self):
+        self.network.write_text('[device]\n# comment\n[logging]\nlevel=INFO\n')
+        self.run_config('configure_network_backend')
+        self.assertEqual(self.network.read_text(), '[device]\nwifi.backend=iwd\n# comment\n[logging]\nlevel=INFO\n')
 
 
 class ShellTests(unittest.TestCase):

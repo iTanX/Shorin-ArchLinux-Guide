@@ -111,6 +111,72 @@ class DesktopTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('AFTER_NETWORK', result.stdout)
 
+    def test_fonts_refresh_database_before_installing_packages(self):
+        calls = self.root / 'fonts.calls'
+        code = '''
+source "$1"
+CALLS="$2"
+sudo() { printf '%s\\0' "$@" >> "$CALLS"; printf '\\n' >> "$CALLS"; }
+install_fonts
+'''
+        subprocess.run(['bash', '-c', code, 'fonts-check', str(self.fixture), str(calls)],
+                       check=True, text=True, capture_output=True)
+        rows = [row[:-1].decode().split('\0') for row in calls.read_bytes().splitlines()]
+        self.assertEqual(rows[0], ['pacman', '-Syu'])
+        self.assertEqual(rows[1], ['pacman', '-S', 'noto-fonts', 'noto-fonts-cjk',
+                                   'noto-fonts-emoji', 'ttf-jetbrains-mono-nerd'])
+
+    def test_archlinuxcn_only_adds_missing_section_or_uncomments_existing_section(self):
+        config = self.root / 'pacman.conf'
+        self.fixture.write_text(self.fixture.read_text().replace('/etc/pacman.conf', str(config)))
+        code = '''
+source "$1"
+sed() {
+    if [[ $(uname -s) == Darwin && $1 == -i ]]; then
+        shift
+        command sed -i '' "$@"
+    else
+        command sed "$@"
+    fi
+}
+sudo() { if [[ $1 != pacman ]]; then "$@"; fi; }
+configure_archlinuxcn
+'''
+        samples = (
+            ('[core]\nInclude = core\n',
+             '[core]\nInclude = core\n\n[archlinuxcn]\nServer = https://mirrors.ustc.edu.cn/archlinuxcn/$arch\nServer = https://mirrors.tuna.tsinghua.edu.cn/archlinuxcn/$arch\n'),
+            ('#[archlinuxcn]\n#Server = https://existing.example/$arch\n#[extra]\n#Server = https://extra.example/$arch\n',
+             '[archlinuxcn]\nServer = https://existing.example/$arch\n#[extra]\n#Server = https://extra.example/$arch\n'),
+            ('[archlinuxcn]\nServer = https://existing.example/$arch\n',
+             '[archlinuxcn]\nServer = https://existing.example/$arch\n'),
+        )
+        for before, expected in samples:
+            with self.subTest(before=before):
+                config.write_text(before)
+                for _ in range(2):
+                    subprocess.run(['bash', '-c', code, 'repo-check', str(self.fixture)],
+                                   check=True, text=True, capture_output=True)
+                    self.assertEqual(config.read_text(), expected)
+
+    def test_hidden_apps_use_custom_xdg_data_directory(self):
+        templates = self.root / 'system-applications'
+        templates.mkdir()
+        (templates / 'vim.desktop').write_text('[Desktop Entry]\nName=Vim\n')
+        self.fixture.write_text(self.fixture.read_text().replace('/usr/share/applications/', str(templates) + '/'))
+        data = self.root / 'custom-data'
+        calls = self.root / 'desktop-entry.calls'
+        code = '''
+source "$1"
+CALLS="$2"
+sed() { printf '%s\\0' "$@" >> "$CALLS"; }
+hide_dependency_apps
+'''
+        subprocess.run(['bash', '-c', code, 'xdg-check', str(self.fixture), str(calls)],
+                       check=True, text=True, capture_output=True, env={**os.environ, 'XDG_DATA_HOME': str(data)})
+        target = data / 'applications/vim.desktop'
+        self.assertEqual(target.read_text(), (templates / 'vim.desktop').read_text())
+        self.assertEqual(calls.read_bytes().split(b'\0')[-2].decode(), str(target))
+
     def test_gdm_starts_only_after_terminal_configuration_and_final_question(self):
         if os.geteuid() == 0:
             self.skipTest('完整桌面入口要求普通用户；本测试不绕过该身份检查。')
