@@ -312,6 +312,39 @@ for function in "${@:3}"; do "$function"; done
 
 
 class ShellTests(unittest.TestCase):
+    def test_network_only_probes_baidu_before_entering_wifi(self):
+        import tempfile
+        # 命令替身禁止真实联网；进入 Wi-Fi 列表后退出，避免后续交互。
+        code = r'''
+source "$1"
+CALLS="$2"
+PROBE_STATUS="$3"
+record() { printf '%s\0' "$@" >> "$CALLS"; printf '\n' >> "$CALLS"; }
+ip() { record ip "$@"; return 99; }
+curl() { record curl "$@"; return "$PROBE_STATUS"; }
+systemctl() { record systemctl "$@"; }
+iwctl() { record iwctl "$@"; return 23; }
+connect_network
+printf 'AFTER_NETWORK\n'
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            for probe_status in (0, 22):
+                with self.subTest(probe_status=probe_status):
+                    calls = Path(directory, str(probe_status) + '.calls')
+                    result = subprocess.run(['bash', '-c', code, 'network-check', str(SCRIPT),
+                                             str(calls), str(probe_status)], capture_output=True, text=True)
+                    rows = [row[:-1].decode().split('\0') for row in calls.read_bytes().splitlines()]
+                    self.assertEqual(rows[0][0], 'curl')
+                    self.assertEqual(rows[0][-1], 'https://www.baidu.com/')
+                    if probe_status == 0:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(len(rows), 1)
+                        self.assertIn('AFTER_NETWORK', result.stdout)
+                    else:
+                        self.assertEqual(result.returncode, 23, result.stderr)
+                        self.assertEqual(rows[1:], [['systemctl', 'start', 'iwd'], ['iwctl', 'device', 'list']])
+                        self.assertNotIn('AFTER_NETWORK', result.stdout)
+
     def test_syntax(self):
         subprocess.run(['bash', '-n', str(SCRIPT)], check=True)
 

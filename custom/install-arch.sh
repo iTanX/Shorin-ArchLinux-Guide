@@ -60,7 +60,7 @@ check_environment() {
     [[ $(</sys/firmware/efi/fw_platform_size) == 64 ]] || fail '仅支持 64 位 UEFI。'
     [[ -t 0 && -t 1 ]] || fail '请在交互终端中运行，不要通过管道执行脚本。'
     local cmd
-    for cmd in python3 lsblk sfdisk wipefs blkid blockdev udevadm ip curl iwctl \
+    for cmd in python3 lsblk sfdisk wipefs blkid blockdev udevadm curl iwctl \
         timedatectl reflector install pacstrap genfstab arch-chroot mkfs.fat \
         mkfs.btrfs btrfs mount umount findmnt swapon swapoff cmp; do
         command -v "$cmd" >/dev/null || fail "缺少工具：$cmd，请使用最新的官方 Arch ISO。"
@@ -83,23 +83,13 @@ online() {
 # 3.3 连接网络
 connect_network() {
     step 3.3 '连接网络'
-    local iface ssid wired=0 route_iface
-    # 3.3.1 检查有线网络：使用默认路由和实际网络请求确认出口可用。
-    step 3.3.1 '检测有线网络连接'
-    route_iface=$(ip -j route get 1.1.1.1 2>/dev/null | python3 -c \
-        'import json,sys; a=json.load(sys.stdin); print(a[0].get("dev", "") if a else "")' || true)
-    if [[ -z $route_iface ]]; then
-        route_iface=$(ip -j -6 route get 2606:4700:4700::1111 2>/dev/null | python3 -c \
-            'import json,sys; a=json.load(sys.stdin); print(a[0].get("dev", "") if a else "")' || true)
-    fi
-    if [[ -n $route_iface && $route_iface != lo && ! -d /sys/class/net/$route_iface/wireless \
-        && ! -e /sys/class/net/$route_iface/phy80211 ]] && online; then
-        wired=1
-    fi
-    if (( ! wired )); then
+    local iface ssid
+    # 3.3.1 直接访问百度，失败时进入 Wi-Fi 连接流程。
+    step 3.3.1 '检测网络连接：访问百度'
+    if ! online; then
         # 3.3.2 连接无线网络：选择设备和 SSID，由 iwctl 安全读取密码。
         step 3.3.2 '连接 Wi-Fi'
-        say '未检测到可用的有线网络。请连接 Wi-Fi（凭据仅用于当前 Live 环境）。'
+        say '无法访问百度。请连接 Wi-Fi（凭据仅用于当前 Live 环境）。'
         systemctl start iwd
         iwctl device list
         ask '无线设备名称（例如 wlan0）：' iface

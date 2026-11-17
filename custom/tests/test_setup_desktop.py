@@ -15,18 +15,13 @@ scan_count=0
 wifi_connected=0
 record() { printf '%s\0' "$@" >> "$CALLS"; printf '\n' >> "$CALLS"; }
 sudo() { record sudo "$@"; if [[ $1 == nmcli ]]; then shift; nmcli "$@"; fi; }
-ip() {
-    case "$CASE" in
-        wired-*) printf '1.1.1.1 dev enp1s0 src 192.0.2.2\n' ;;
-        *) printf '1.1.1.1 dev wlan0 src 192.0.2.3\n' ;;
-    esac
-}
+ip() { record ip "$@"; return 99; }
 curl() {
     record curl "$@"
     case "$CASE" in
-        wired-offline) (( wifi_connected )) ;;
+        online) return 0 ;;
         wifi-offline) return 22 ;;
-        *) return 0 ;;
+        *) (( wifi_connected )) ;;
     esac
 }
 nmcli() {
@@ -75,17 +70,17 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn('AFTER_NETWORK', result.stdout)
 
-    def test_wired_connection_checks_baidu(self):
-        result, rows = self.run_network('wired-online', '')
+    def test_baidu_success_continues_without_route_or_wifi_checks(self):
+        result, rows = self.run_network('online', '')
         self.assert_connected(result)
         urls = [row[-1] for row in rows if row[0] == 'curl']
         self.assertEqual(urls, ['https://www.baidu.com/'])
-        self.assertFalse(any(row[0] == 'nmcli' for row in rows))
+        self.assertFalse(any(row[0] in ('ip', 'nmcli') for row in rows))
 
-    def test_failed_wired_probe_goes_directly_to_wifi(self):
-        result, rows = self.run_network('wired-offline', 'wlan0\n测试 Wi-Fi\n')
+    def test_failed_baidu_probe_goes_directly_to_wifi(self):
+        result, rows = self.run_network('offline', 'wlan0\n测试 Wi-Fi\n')
         self.assert_connected(result)
-        self.assertIn('未检测到可用的有线网络', result.stdout)
+        self.assertIn('无法访问百度', result.stdout)
         self.assertIn(['nmcli', '--ask', 'device', 'wifi', 'connect', '测试 Wi-Fi', 'ifname', 'wlan0'], rows)
 
     def test_scan_failure_can_use_cached_results(self):

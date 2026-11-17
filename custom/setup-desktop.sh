@@ -16,7 +16,7 @@ trap report_error ERR
 
 # 1 桌面环境前置准备
 
-# 1.1 连接网络：优先使用有线网络，否则交互连接 Wi-Fi。
+# 1.1 连接网络：直接访问百度，失败时交互连接 Wi-Fi。
 online() {
     curl --fail --silent --show-error --location --connect-timeout 5 --max-time 10 \
         --output /dev/null https://www.baidu.com/ >/dev/null 2>&1
@@ -24,25 +24,18 @@ online() {
 
 connect_network() {
     step 1.1 '连接网络'
-    local route_iface iface ssid answer
+    local iface ssid answer
     sudo systemctl start NetworkManager
-    # 1.1.1 使用默认路由和实际网络请求确认有线出口可用。
-    step 1.1.1 '检测有线网络连接'
-    route_iface=$(ip -4 route get 1.1.1.1 2>/dev/null | \
-        awk '{for (i=1; i<NF; i++) if ($i == "dev") {print $(i+1); exit}}' || true)
-    if [[ -z $route_iface ]]; then
-        route_iface=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | \
-            awk '{for (i=1; i<NF; i++) if ($i == "dev") {print $(i+1); exit}}' || true)
-    fi
-    if [[ -n $route_iface && $route_iface != lo && ! -d /sys/class/net/$route_iface/wireless \
-        && ! -e /sys/class/net/$route_iface/phy80211 ]] && online; then
-        step 1.1.3 '确认网络连接：有线网络可用'
+    # 1.1.1 直接访问百度，成功后继续安装。
+    step 1.1.1 '检测网络连接：访问百度'
+    if online; then
+        step 1.1.3 '确认网络连接：网络可用'
         return
     fi
 
     # 1.1.2 由 NetworkManager 管理无线连接，nmcli 交互读取 Wi-Fi 密码。
     step 1.1.2 '连接 Wi-Fi'
-    printf '未检测到可用的有线网络，请选择无线设备。\n'
+    printf '无法访问百度，请选择无线设备连接 Wi-Fi。\n'
     nmcli device status
     read -r -p '无线设备名称（例如 wlan0）：' iface
     if [[ -z $iface || $iface == */* || ! -e /sys/class/net/$iface/phy80211 ]]; then
