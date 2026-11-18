@@ -318,6 +318,8 @@ class ShellTests(unittest.TestCase):
         code = r'''
 source "$1"
 CALLS="$2"
+# 此测试覆盖无配置分支，不读取用户实际的 Wi-Fi 凭据。
+WIFI_CONFIG="$CALLS.wifi.conf"
 PROBE_STATUS="$3"
 record() { printf '%s\0' "$@" >> "$CALLS"; printf '\n' >> "$CALLS"; }
 ip() { record ip "$@"; return 99; }
