@@ -262,6 +262,12 @@ install_gnome_extras() {
     # 2.1.3 补充安装：调整工具、密钥、归档和高级网络设置。
     step 2.1.3 '安装 GNOME 补充工具'
     sudo pacman -S gnome-tweaks seahorse file-roller nm-connection-editor
+    # 2.1.3.1 覆盖当前用户的应用入口，使用清晰的 symbolic 图标。
+    step 2.1.3.1 '设置高级网络配置的 symbolic 图标'
+    local applications="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    mkdir -p "$applications"
+    cp /usr/share/applications/nm-connection-editor.desktop "$applications/nm-connection-editor.desktop"
+    sed -i 's/^Icon=.*/Icon=preferences-system-network-symbolic/' "$applications/nm-connection-editor.desktop"
 }
 
 hide_dependency_apps() {
