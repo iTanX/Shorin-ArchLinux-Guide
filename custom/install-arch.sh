@@ -579,12 +579,16 @@ configure_locale() {
 
 # 6.6.2 编辑 GRUB 配置：启用已有示例，缺少对应项时才新增。
 configure_grub() {
-    local config="$TARGET/etc/default/grub"
-    if grep -qE '^[[:space:]]*#?[[:space:]]*GRUB_DISABLE_OS_PROBER[[:space:]]*=' "$config"; then
-        sed -i -E 's/^[[:space:]]*#?[[:space:]]*GRUB_DISABLE_OS_PROBER[[:space:]]*=.*/GRUB_DISABLE_OS_PROBER=false/' "$config"
-    else
-        printf '\nGRUB_DISABLE_OS_PROBER=false\n' >> "$config"
-    fi
+    local config="$TARGET/etc/default/grub" setting key
+    # 记忆上次选择的启动项，同时保留其他系统检测。
+    for setting in GRUB_DEFAULT=saved GRUB_SAVEDEFAULT=true GRUB_DISABLE_OS_PROBER=false; do
+        key=${setting%%=*}
+        if grep -qE "^[[:space:]]*#?[[:space:]]*${key}[[:space:]]*=" "$config"; then
+            sed -i -E "s/^[[:space:]]*#?[[:space:]]*${key}[[:space:]]*=.*/${setting}/" "$config"
+        else
+            printf '\n%s\n' "$setting" >> "$config"
+        fi
+    done
 }
 
 # 6.7.1 配置 iwd 后端：只修改专用的 iwd.conf。
@@ -667,11 +671,15 @@ configure_target() {
     step 6.6.1 '安装 GRUB 到 ESP，注册 ARCH 启动项'
     arch-chroot "$TARGET" grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=ARCH
     # 6.6.2 编辑 GRUB 配置。
-    step 6.6.2 '编辑 GRUB 配置：启用其他系统检测'
+    step 6.6.2 '编辑 GRUB 配置：启用启动项记忆和其他系统检测'
     configure_grub
     # 6.6.3 生成启动流程 grub.cfg。
     step 6.6.3 '生成 GRUB 启动配置'
     arch-chroot "$TARGET" grub-mkconfig -o /boot/grub/grub.cfg
+    # 6.6.4 初始化 Btrfs 环境块，使 GRUB 能保存上次选择的启动项。
+    step 6.6.4 '初始化 Btrfs 环境块并查看环境变量'
+    arch-chroot "$TARGET" grub-editenv - set ok=1
+    arch-chroot "$TARGET" grub-editenv - list
     # 6.7 设置无线网络：软件包已在 5.1 基础安装中安装。
     step 6.7 '设置无线网络：NetworkManager + iwd'
     step 6.7.1 '配置 NetworkManager 的 iwd 后端'

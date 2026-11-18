@@ -238,7 +238,7 @@ class ConfigTests(unittest.TestCase):
         self.network = self.root / 'etc/NetworkManager/conf.d/iwd.conf'
         self.network.parent.mkdir(parents=True)
         (self.root / 'etc/locale.gen').write_text('#en_US.UTF-8 UTF-8\n#zh_CN.UTF-8 UTF-8\n#ja_JP.UTF-8 UTF-8\n')
-        (self.root / 'etc/default/grub').write_text('#GRUB_DISABLE_OS_PROBER=false\n')
+        (self.root / 'etc/default/grub').write_text('GRUB_DEFAULT=0\n#GRUB_SAVEDEFAULT=true\n#GRUB_DISABLE_OS_PROBER=false\n')
 
     def run_config(self, *functions):
         code = '''
@@ -265,14 +265,20 @@ for function in "${@:3}"; do "$function"; done
         self.run_config('configure_locale', 'configure_grub')
         self.assertEqual((self.root / 'etc/locale.gen').read_text(), 'en_US.UTF-8 UTF-8\nzh_CN.UTF-8 UTF-8\n#ja_JP.UTF-8 UTF-8\n')
         self.assertEqual((self.root / 'etc/locale.conf').read_text(), 'LANG=en_US.UTF-8\n')
-        self.assertEqual((self.root / 'etc/default/grub').read_text(), 'GRUB_DISABLE_OS_PROBER=false\n')
+        self.assertEqual((self.root / 'etc/default/grub').read_text(), 'GRUB_DEFAULT=saved\nGRUB_SAVEDEFAULT=true\nGRUB_DISABLE_OS_PROBER=false\n')
 
     def test_missing_keys_are_added_without_changing_other_settings(self):
         (self.root / 'etc/default/grub').write_text('GRUB_DEFAULT=0\n')
         self.run_config('configure_locale', 'configure_grub', 'configure_network_backend')
         self.assertEqual((self.root / 'etc/locale.conf').read_text(), 'LANG=en_US.UTF-8\n')
-        self.assertEqual((self.root / 'etc/default/grub').read_text(), 'GRUB_DEFAULT=0\n\nGRUB_DISABLE_OS_PROBER=false\n')
+        self.assertEqual((self.root / 'etc/default/grub').read_text(), 'GRUB_DEFAULT=saved\n\nGRUB_SAVEDEFAULT=true\n\nGRUB_DISABLE_OS_PROBER=false\n')
         self.assertEqual(self.network.read_text(), '[device]\nwifi.backend=iwd\n')
+
+    def test_grub_memory_settings_preserve_other_options_and_do_not_duplicate(self):
+        config = self.root / 'etc/default/grub'
+        config.write_text('#GRUB_DEFAULT=0\nGRUB_SAVEDEFAULT=false\nGRUB_DISABLE_OS_PROBER=true\nGRUB_TIMEOUT=5\n')
+        self.run_config('configure_grub', 'configure_grub')
+        self.assertEqual(config.read_text(), 'GRUB_DEFAULT=saved\nGRUB_SAVEDEFAULT=true\nGRUB_DISABLE_OS_PROBER=false\nGRUB_TIMEOUT=5\n')
 
     def test_ssh_configures_password_login_and_enables_only_target_service(self):
         config = self.root / 'etc/ssh/sshd_config'
@@ -312,6 +318,41 @@ for function in "${@:3}"; do "$function"; done
 
 
 class ShellTests(unittest.TestCase):
+    def test_btrfs_environment_is_initialized_after_grub_config_in_target(self):
+        import tempfile
+        # 目标命令全部使用替身；夹具只把 passwd 的终端重定向改为空输入。
+        code = r'''
+source "$1"
+TARGET="$2"
+CALLS="$3"
+HOSTNAME_VALUE=test-arch
+record() { printf '%s\0' "$@" >> "$CALLS"; printf '\n' >> "$CALLS"; }
+arch-chroot() { record "$@"; }
+readlink() { printf '/usr/share/zoneinfo/Asia/Shanghai\n'; }
+configure_locale() { :; }
+configure_grub() { record configure_grub; }
+configure_network_backend() { :; }
+configure_target_wifi() { :; }
+configure_target
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'target'
+            (target / 'etc').mkdir(parents=True)
+            fixture = root / 'install-arch.sh'
+            fixture.write_text(SCRIPT.read_text().replace('passwd root </dev/tty', 'passwd root </dev/null'))
+            calls = root / 'calls'
+            result = subprocess.run(['bash', '-c', code, 'grub-check', str(fixture), str(target), str(calls)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = [row[:-1].decode().split('\0') for row in calls.read_bytes().splitlines()]
+            generation = [str(target), 'grub-mkconfig', '-o', '/boot/grub/grub.cfg']
+            initialization = [str(target), 'grub-editenv', '-', 'set', 'ok=1']
+            verification = [str(target), 'grub-editenv', '-', 'list']
+            self.assertLess(rows.index(['configure_grub']), rows.index(generation))
+            self.assertEqual(rows[rows.index(generation) + 1:rows.index(generation) + 3],
+                             [initialization, verification])
+
     def test_network_only_probes_baidu_before_entering_wifi(self):
         import tempfile
         # 命令替身禁止真实联网；进入 Wi-Fi 列表后退出，避免后续交互。
