@@ -37,5 +37,3 @@ dotfiles/.local/bin/pacd
 dotfiles/.local/bin/li
 dotfiles/.local/bin/vir
 dotfiles/.config/fcitx5/conf/notifications.conf
-# 本地 Wi-Fi 凭据
-custom/wifi.conf

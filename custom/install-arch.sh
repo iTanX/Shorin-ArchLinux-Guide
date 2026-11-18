@@ -12,9 +12,6 @@ STAGE=环境检查
 WORK=
 SWAP_ACTIVE=0
 declare -a MOUNTS=()
-# 加载脚本时保存同目录配置路径，供联网步骤使用。
-WIFI_CONFIG=${BASH_SOURCE[0]}
-WIFI_CONFIG="$(dirname -- "$WIFI_CONFIG")/wifi.conf"
 
 # 交互与资源清理：统一输出步骤名称，并在退出时释放本次安装使用的资源。
 say() { printf '\n%s\n' "$*" >&2; }
@@ -86,45 +83,14 @@ online() {
 # 3.3 连接网络
 connect_network() {
     step 3.3 '连接网络'
-    local iface= ssid= password= config line device
+    local iface ssid
     # 3.3.1 直接访问百度，失败时进入 Wi-Fi 连接流程。
     step 3.3.1 '检测网络连接：访问百度'
     if ! online; then
-        # 3.3.2 优先读取同目录配置自动连接，未填写配置时保留手工连接。
+        # 3.3.2 连接无线网络：选择设备和 SSID，由 iwctl 安全读取密码。
         step 3.3.2 '连接 Wi-Fi'
-        systemctl start iwd
-        config=$WIFI_CONFIG
-        if [[ -f $config ]]; then
-            # 按字面值读取，不执行配置内容；等号后可包含空格、$、# 等字符。
-            while IFS= read -r line || [[ -n $line ]]; do
-                line=${line%$'\r'}
-                case "$line" in
-                    WIFI_SSID=*) ssid=${line#*=} ;;
-                    WIFI_PASSWORD=*) password=${line#*=} ;;
-                    WIFI_INTERFACE=*) iface=${line#*=} ;;
-                esac
-            done < "$config"
-        fi
-        if [[ -n $ssid || -n $password ]]; then
-            [[ -n $ssid && -n $password ]] || fail '请在 wifi.conf 中填写 WIFI_SSID 和 WIFI_PASSWORD。'
-            # 未指定网卡时使用第一个无线设备，无需手工输入设备名称。
-            if [[ -z $iface ]]; then
-                for device in /sys/class/net/*/phy80211; do
-                    [[ -e $device ]] || continue
-                    iface=${device%/phy80211}
-                    iface=${iface##*/}
-                    break
-                done
-            fi
-            [[ -n $iface && $iface != */* && -e /sys/class/net/$iface/phy80211 ]] || fail '未找到配置所需的无线设备。'
-            say '无法访问百度，正在使用 wifi.conf 连接 Wi-Fi。'
-            if iwctl --passphrase "$password" station "$iface" connect "$ssid" && online; then
-                step 3.3.3 '确认网络连接：Wi-Fi 可用'
-                return
-            fi
-            fail '配置中的 Wi-Fi 连接失败或无法访问百度，请检查 wifi.conf 后重试。'
-        fi
         say '无法访问百度。请连接 Wi-Fi（凭据仅用于当前 Live 环境）。'
+        systemctl start iwd
         iwctl device list
         ask '无线设备名称（例如 wlan0）：' iface
         [[ -n $iface && $iface != */* && -e /sys/class/net/$iface/phy80211 ]] || fail '无线设备无效。'
@@ -609,35 +575,6 @@ wifi.backend=iwd
     fi
 }
 
-# 6.7.3 按需保存目标系统的无线连接，首次启动后由 NetworkManager 自动连接。
-configure_target_wifi() {
-    step 6.7.3 '配置目标系统的 Wi-Fi 自动连接'
-    if ! confirm '是否需要在目标系统使用无线网络（读取 wifi.conf，首次启动时自动连接）？'; then
-        return 0
-    fi
-    local ssid= password= iface= line
-    [[ -f $WIFI_CONFIG ]] || fail '未找到 wifi.conf，请先填写无线网络配置。'
-    # 与 Live 联网步骤使用相同格式，按字面值读取名称、密码和可选网卡。
-    while IFS= read -r line || [[ -n $line ]]; do
-        line=${line%$'\r'}
-        case "$line" in
-            WIFI_SSID=*) ssid=${line#*=} ;;
-            WIFI_PASSWORD=*) password=${line#*=} ;;
-            WIFI_INTERFACE=*) iface=${line#*=} ;;
-        esac
-    done < "$WIFI_CONFIG"
-    [[ -n $ssid && -n $password ]] || fail '请在 wifi.conf 中填写 WIFI_SSID 和 WIFI_PASSWORD。'
-    local profile="$TARGET/etc/NetworkManager/system-connections/install-wifi.nmconnection"
-    local -a connection=(type wifi con-name install-wifi ssid "$ssid"
-        connection.autoconnect yes wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$password")
-    [[ -z $iface ]] || connection+=(ifname "$iface")
-    mkdir -p "${profile%/*}"
-    # 密钥文件仅允许 root 读写；离线生成配置，不调用 Live 的 NetworkManager。
-    install -m 600 /dev/null "$profile"
-    arch-chroot "$TARGET" nmcli --offline connection add "${connection[@]}" > "$profile"
-    say '目标系统 Wi-Fi 配置已保存，重启进入目标系统后将自动连接。'
-}
-
 # 6 基础设置
 configure_target() {
     # 6.1 更换根目录：每条目标系统命令都通过 arch-chroot 执行。
@@ -687,7 +624,6 @@ configure_target() {
     # 6.7.2 启用 NetworkManager 服务。
     step 6.7.2 '启用 NetworkManager 开机自启'
     arch-chroot "$TARGET" systemctl enable NetworkManager
-    configure_target_wifi
 }
 
 # 6.8 桌面环境前置准备：在目标系统中完成需要 root 执行的用户初始化。
@@ -805,7 +741,7 @@ main() {
     verify_target
     # 6.9 退出 chroot：目标系统命令执行完毕，后续操作均在 Live 环境中执行。
     step 6.9 '退出 chroot：目标系统配置完成，返回 Live 环境'
-    say '安装完成。首次启动后以新建的普通用户登录，确认联网（需要时运行 nmtui），再执行 bash setup-desktop.sh 安装桌面。'
+    say '安装完成。首次启动后以新建的普通用户登录，运行 nmtui 联网，再执行 bash setup-desktop.sh 安装桌面。'
     # 6.10 重启电脑：用户确认后，先清理挂载再重启。
     step 6.10 '重启电脑'
     if confirm '现在卸载安装挂载并重启？'; then

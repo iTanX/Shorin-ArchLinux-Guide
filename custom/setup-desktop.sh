@@ -4,12 +4,7 @@
 # 在已安装的系统中以普通用户执行：bash setup-desktop.sh；系统操作由脚本内部 sudo 提权。
 # 每个函数对应独立功能步骤，系统配置使用 sudo，用户配置写入当前用户的 HOME。
 set -Eeuo pipefail
-# 配置文件含 Wi-Fi 密码，关闭命令跟踪以免输出凭据。
-set +x
 
-# 加载脚本时保存同目录配置路径，供联网步骤使用。
-WIFI_CONFIG=${BASH_SOURCE[0]}
-WIFI_CONFIG="$(dirname -- "$WIFI_CONFIG")/wifi.conf"
 STEP=启动脚本
 step() { STEP="$1 $2"; printf '\n==> [%s] %s\n' "$1" "$2"; }
 report_error() {
@@ -21,7 +16,7 @@ trap report_error ERR
 
 # 1 桌面环境前置准备
 
-# 1.1 连接网络：直接访问百度，失败时优先按配置连接 Wi-Fi。
+# 1.1 连接网络：直接访问百度，失败时交互连接 Wi-Fi。
 online() {
     curl --fail --silent --show-error --location --connect-timeout 5 --max-time 10 \
         --output /dev/null https://www.baidu.com/ >/dev/null 2>&1
@@ -29,7 +24,7 @@ online() {
 
 connect_network() {
     step 1.1 '连接网络'
-    local iface= ssid= password= answer config line device
+    local iface ssid answer
     sudo systemctl start NetworkManager
     # 1.1.1 直接访问百度，成功后继续安装。
     step 1.1.1 '检测网络连接：访问百度'
@@ -38,46 +33,8 @@ connect_network() {
         return
     fi
 
-    # 1.1.2 优先读取同目录配置自动连接，未填写配置时保留手工连接。
+    # 1.1.2 由 NetworkManager 管理无线连接，nmcli 交互读取 Wi-Fi 密码。
     step 1.1.2 '连接 Wi-Fi'
-    config=$WIFI_CONFIG
-    if [[ -f $config ]]; then
-        # 按字面值读取，不执行配置内容；等号后可包含空格、$、# 等字符。
-        while IFS= read -r line || [[ -n $line ]]; do
-            line=${line%$'\r'}
-            case "$line" in
-                WIFI_SSID=*) ssid=${line#*=} ;;
-                WIFI_PASSWORD=*) password=${line#*=} ;;
-                WIFI_INTERFACE=*) iface=${line#*=} ;;
-            esac
-        done < "$config"
-    fi
-    if [[ -n $ssid || -n $password ]]; then
-        if [[ -z $ssid || -z $password ]]; then
-            printf '请在 wifi.conf 中填写 WIFI_SSID 和 WIFI_PASSWORD。\n' >&2
-            return 1
-        fi
-        # 未指定网卡时使用第一个无线设备，无需手工输入设备名称。
-        if [[ -z $iface ]]; then
-            for device in /sys/class/net/*/phy80211; do
-                [[ -e $device ]] || continue
-                iface=${device%/phy80211}
-                iface=${iface##*/}
-                break
-            done
-        fi
-        if [[ -z $iface || $iface == */* || ! -e /sys/class/net/$iface/phy80211 ]]; then
-            printf '未找到配置所需的无线设备。\n' >&2
-            return 1
-        fi
-        printf '无法访问百度，正在使用 wifi.conf 连接 Wi-Fi。\n'
-        if sudo nmcli device wifi connect "$ssid" password "$password" ifname "$iface" && online; then
-            step 1.1.3 '确认网络连接：Wi-Fi 可用'
-            return
-        fi
-        printf '配置中的 Wi-Fi 连接失败或无法访问百度，请检查 wifi.conf 后重试。\n' >&2
-        return 1
-    fi
     printf '无法访问百度，请选择无线设备连接 Wi-Fi。\n'
     nmcli device status
     read -r -p '无线设备名称（例如 wlan0）：' iface
