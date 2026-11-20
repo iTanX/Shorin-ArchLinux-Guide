@@ -201,6 +201,7 @@ install_gnome_base() {
         gvfs-smb \
         gvfs-wsdd \
         loupe \
+        malcontent \
         nautilus \
         papers \
         rygel \
@@ -228,12 +229,12 @@ install_gnome_extras() {
 }
 
 hide_dependency_apps() {
-    # 2.1.4 隐藏依赖带入的图形化应用，仅修改当前普通用户的桌面条目。
-    step 2.1.4 '隐藏依赖带入的图形化应用'
+    # 2.1.4 仅隐藏当前用户的启动器，保留 malcontent 后台供 GNOME 设置使用。
+    step 2.1.4 '隐藏不需要的应用图标'
     local app src dst applications
     applications="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
     mkdir -p "$applications"
-    for app in lstopo qv4l2 qvidcap vim; do
+    for app in lstopo qv4l2 qvidcap vim org.freedesktop.MalcontentControl; do
         src="/usr/share/applications/$app.desktop"
         dst="$applications/$app.desktop"
         if [[ -f $src ]]; then

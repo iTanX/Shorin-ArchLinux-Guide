@@ -153,10 +153,23 @@ configure_archlinuxcn
                                    check=True, text=True, capture_output=True)
                     self.assertEqual(config.read_text(), expected)
 
+    def test_gnome_base_installs_malcontent(self):
+        code = '''
+source "$1"
+sudo() { printf '%s\\n' "$@"; }
+install_gnome_base
+'''
+        result = subprocess.run(['bash', '-c', code, 'gnome-check', str(self.fixture)],
+                                check=True, text=True, capture_output=True)
+        self.assertIn('malcontent', result.stdout.splitlines())
+
     def test_hidden_apps_use_custom_xdg_data_directory(self):
         templates = self.root / 'system-applications'
         templates.mkdir()
-        (templates / 'vim.desktop').write_text('[Desktop Entry]\nName=Vim\n')
+        # 用模拟的系统启动器验证 Vim 和家长控制都走用户级覆盖。
+        launchers = ('vim.desktop', 'org.freedesktop.MalcontentControl.desktop')
+        for launcher in launchers:
+            (templates / launcher).write_text(f'[Desktop Entry]\nName={launcher}\n')
         self.fixture.write_text(self.fixture.read_text().replace('/usr/share/applications/', str(templates) + '/'))
         data = self.root / 'custom-data'
         calls = self.root / 'desktop-entry.calls'
@@ -168,9 +181,13 @@ hide_dependency_apps
 '''
         subprocess.run(['bash', '-c', code, 'xdg-check', str(self.fixture), str(calls)],
                        check=True, text=True, capture_output=True, env={**os.environ, 'XDG_DATA_HOME': str(data)})
-        target = data / 'applications/vim.desktop'
-        self.assertEqual(target.read_text(), (templates / 'vim.desktop').read_text())
-        self.assertEqual(calls.read_bytes().split(b'\0')[-2].decode(), str(target))
+        arguments = calls.read_bytes().decode().split('\0')[:-1]
+        for launcher in launchers:
+            target = data / 'applications' / launcher
+            self.assertTrue(target.is_file(), f'缺少用户级启动器：{launcher}')
+            self.assertEqual(target.read_text(), (templates / launcher).read_text())
+            index = arguments.index(str(target))
+            self.assertIn('NoDisplay=true', arguments[index - 1])
 
     def test_gdm_starts_only_after_terminal_configuration_and_final_question(self):
         if os.geteuid() == 0:
